@@ -7712,7 +7712,7 @@ function makeDirect(isHost){
     if(m.t==='p'&&m.p&&typeof m.p==='object'){R.pm.set(m.k,{p:Object.freeze(m.p),t:Date.now(),via:lk});if(isHost)R.sendAll(m,lk);fire();}
     else if(m.t==='bye'){R.pm.delete(m.k);if(isHost)R.sendAll(m,lk);fire();}};
   R.linkDown=lk=>{if(!R.links.has(lk))return;for(const [k,v] of R.pm)if(v.via===lk){R.pm.delete(k);if(isHost)R.sendAll({t:'bye',k},lk);}
-    const l=R.links.get(lk);R.links.delete(lk);try{l.pc.close();}catch(e){}R.updConn();fire();};
+    const l=R.links.get(lk);R.links.delete(lk);try{l.close?l.close():l.pc.close();}catch(e){}R.updConn();fire();};
   R.newLink=()=>{const key='L'+rid(),pc=new RTCPeerConnection({iceServers:ICE}),l={key,pc,dc:null};R.links.set(key,l);
     pc.addEventListener('connectionstatechange',()=>{const st=pc.connectionState;if(st==='failed'||st==='closed')R.linkDown(key);
       else if(st==='disconnected')setTimeout(()=>{if(pc.connectionState==='disconnected'||pc.connectionState==='failed')R.linkDown(key);},6000);});
@@ -7720,13 +7720,17 @@ function makeDirect(isHost){
   R.wire=(l,dc)=>{l.dc=dc;
     dc.onopen=()=>{R.updConn();sendTo(l,{t:'p',k:R.myKey,p:R.pres});if(isHost)for(const [k,v] of R.pm)if(v.via!==l.key)sendTo(l,{t:'p',k,p:v.p});R.onOpen&&R.onOpen(l);};
     dc.onmessage=e=>R.onMsg(l.key,e.data);dc.onclose=()=>R.linkDown(l.key);};
+  // a PeerJS data connection, wired like a raw data channel
+  R.wirePeer=conn=>{const l={key:'L'+rid(),pc:null,conn,close:()=>conn.close(),dc:{get readyState(){return conn.open?'open':'closed';},send:t=>conn.send(t)}};R.links.set(l.key,l);
+    conn.on('open',()=>{R.updConn();sendTo(l,{t:'p',k:R.myKey,p:R.pres});if(isHost)for(const [k,v] of R.pm)if(v.via!==l.key)sendTo(l,{t:'p',k,p:v.p});R.onOpen&&R.onOpen(l);});
+    conn.on('data',d=>R.onMsg(l.key,typeof d==='string'?d:String(d)));conn.on('close',()=>R.linkDown(l.key));conn.on('error',()=>R.linkDown(l.key));return l;};
   R.api=Object.freeze({
     presence:async patch=>{const n=Object.assign({},R.pres);for(const k in patch){if(patch[k]===null)delete n[k];else n[k]=patch[k];}R.pres=Object.freeze(n);R.sendAll({t:'p',k:R.myKey,p:n});fire();},
     peers:()=>R.cur,
     onPeers:h=>{R.hs.add(h);setTimeout(()=>h({peers:R.cur,joined:R.cur,left:[],updated:[]}),0);return()=>R.hs.delete(h);},
     connected:()=>R.conn,
     onConnection:h=>{R.cs.add(h);setTimeout(()=>h(R.conn),0);return()=>R.cs.delete(h);},
-    leave:async()=>{R.sendAll({t:'bye',k:R.myKey});setTimeout(()=>{for(const l of [...R.links.values()])try{l.pc.close();}catch(e){}R.links.clear();},250);},
+    leave:async()=>{R.sendAll({t:'bye',k:R.myKey});setTimeout(()=>{for(const l of [...R.links.values()])try{l.close?l.close():l.pc.close();}catch(e){}R.links.clear();try{R.peer&&R.peer.destroy();}catch(e){}},250);},
     emit:async()=>{},on:()=>()=>{}});
   return R;
 }
@@ -7789,16 +7793,44 @@ $('lbInvite').onclick=()=>dcOpen('host');
 $('dcGo').onclick=dcGo;$('dcCopy').onclick=dcCopy;
 $('dcShare').onclick=()=>{try{navigator.share({text:$('dcOut').value}).catch(()=>{});}catch(e){}};
 $('dcClose').onclick=()=>{$('dc').hidden=true;if(!net.direct&&DC.R){try{DC.R.api.leave();}catch(e){}DC.R=null;}};
-function goDirect(R){
+function goDirect(R,shown){
   readName();audioInit();resetMatchLocal();
   net.solo=false;net.code='direct';net.myKey=R.myKey;net.hostKey=null;net.peers=[];H.g=null;net.err='';net.conn=R.conn;net.direct=R;
   attachRoom(R.api,'direct',false);PS.last='';PS.busy=false;sendPresence(true);
-  $('lbCode').textContent='DIRECT';app.mode='lobby';show('scrLobby');
+  $('lbCode').textContent=shown?shown.toUpperCase():'DIRECT';app.mode='lobby';show('scrLobby');
+}
+/* ---- self-hosted pages: room codes over PeerJS (a free public matchmaker introduces the browsers, then they talk directly) ---- */
+let peerMode=false;
+const PEER_PREFIX='sandline-hedp-v1-';
+function peerOpts(){let o={};try{o=JSON.parse(localStorage.getItem('sandline-peer')||'{}')||{};}catch(e){}return Object.assign({config:{iceServers:ICE},debug:0},o);}
+function loadPeerJs(){return new Promise(res=>{if(window.Peer)return res(true);const sc=document.createElement('script');sc.src='https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js';sc.onload=()=>res(!!window.Peer);sc.onerror=()=>res(false);document.head.appendChild(sc);setTimeout(()=>res(!!window.Peer),15000);});}
+function peerErr(e){const t=e&&e.type||'';
+  if(t==='unavailable-id')return 'That room code is taken. Tap Create room again for a new one.';
+  if(t==='peer-unavailable')return 'No open room with that code. Check the code, and that the host still has the game open.';
+  if(t==='network'||t==='server-error'||t==='socket-error'||t==='socket-closed')return 'Couldn’t reach the matchmaking service. Check your internet and try again.';
+  if(t==='browser-incompatible')return 'This browser can’t make direct connections. Try Chrome, Edge, Firefox or Safari.';
+  return 'Online play hit a problem ('+(t||e&&e.message||'unknown')+'). Try again.';}
+function goPeer(code,host){
+  readName();audioInit();
+  const btns=on=>{$('btnCreate').disabled=$('btnJoin').disabled=!on;};btns(false);
+  $('netNote').textContent=host?'Opening room '+code.toUpperCase()+'…':'Joining room '+code.toUpperCase()+'…';
+  const R=makeDirect(host),id=PEER_PREFIX+code;let done=false;
+  const fail=e=>{if(done&&app.mode==='lobby'&&net.direct===R){net.err=peerErr(e);return;}done=true;try{R.peer&&R.peer.destroy();}catch(x){}$('netNote').textContent=peerErr(e);btns(true);};
+  let peer;try{peer=host?new Peer(id,peerOpts()):new Peer(peerOpts());}catch(e){fail({type:'browser-incompatible'});return;}
+  R.peer=peer;peer.on('error',fail);
+  if(host){
+    peer.on('open',()=>{done=true;btns(true);goDirect(R,code);$('netNote').textContent='';});
+    peer.on('connection',conn=>{if(R.links.size>=3){try{conn.close();}catch(e){}return;}R.wirePeer(conn);});
+  }else{
+    peer.on('open',()=>{const conn=peer.connect(id,{serialization:'raw',reliable:false});R.wirePeer(conn);
+      conn.on('open',()=>{if(done)return;done=true;btns(true);goDirect(R,code);$('netNote').textContent='';});
+      setTimeout(()=>{if(!done)fail({type:'x',message:'the host didn’t answer. Check the code; if it’s right, one of your networks may block direct links, so try another Wi-Fi or a phone hotspot'});},20000);});
+  }
 }
 const CODEC='abcdefghjkmnpqrstuvwxyz23456789';
-$('btnCreate').onclick=()=>{let c='';for(let i=0;i<4;i++)c+=CODEC[Math.floor(Math.random()*CODEC.length)];goOnline(c);};
+$('btnCreate').onclick=()=>{let c='';for(let i=0;i<4;i++)c+=CODEC[Math.floor(Math.random()*CODEC.length)];if(peerMode)goPeer(c,true);else goOnline(c);};
 $('code').addEventListener('keydown',e=>{if(e.key==='Enter'&&!$('btnJoin').disabled)$('btnJoin').click();});
-$('btnJoin').onclick=()=>{const c=($('code').value||'').toLowerCase().replace(/[^a-z0-9]/g,'');if(c.length<3){$('netNote').textContent='Type the room code your friend shared.';return;}goOnline(c);};
+$('btnJoin').onclick=()=>{const c=($('code').value||'').toLowerCase().replace(/[^a-z0-9]/g,'');if(c.length<3){$('netNote').textContent='Type the room code your friend shared.';return;}if(peerMode)goPeer(c,false);else goOnline(c);};
 $('btnStart').onclick=()=>{if(!amHost())return;H.g.diff=app.diff;hostStart();};
 $('btnLeave').onclick=()=>{leaveOnline();app.mode='menu';show('scrMenu');};
 function toMenu(){leaveOnline();resetMatchLocal();H.g=null;app.mode='menu';show('scrMenu');$('menuPop').hidden=true;$('buy').hidden=true;if(document.pointerLockElement)document.exitPointerLock();}
@@ -7815,14 +7847,14 @@ function renderLobby(){
     if(list.length>4){const d=document.createElement('div');d.className='empty';d.textContent=`+${list.length-4} spectating`;rows.push(d);}
     $('lbList').replaceChildren(...rows);}
   $('lbHost').hidden=!amHost();$('lbWait').hidden=amHost();
-  const n=list.length,st=net.err?net.err:!net.conn&&n<=1?'Connecting to the room…':n<=1?''+(net.direct?'Connected. Invite a friend with the button below.':'Connected. Waiting for friends to join with this code…')+'':`Connected · ${n} players in this room.`;
+  const n=list.length,st=net.err?net.err:!net.conn&&n<=1&&!(net.direct&&net.direct.peer&&net.direct.isHost)?'Connecting to the room…':n<=1?''+(net.direct?''+(net.direct&&net.direct.peer?'Room open. Send your friend this code; they type it and tap Join.':'Connected. Invite a friend with the button below.')+'':'Connected. Waiting for friends to join with this code…')+'':`Connected · ${n} players in this room.`;
   setT($('lbStatus'),st);$('lbStatus').classList.toggle('bad',!!net.err);
   // what the room itself reports, to tell "not connected" apart from "connected but not in this code"
   const all=net.peers||[],oth=all.filter(p=>!p.sameTab),here=oth.filter(p=>p.presence&&p.presence.rc===net.code).length,mine=all.find(p=>p.sameTab);
   const what=oth.map(p=>{const q=p.presence||{},tag=p.isMe?' [your other tab]':p.guest?' [guest]':' [another person]';return wh(q)+tag;});
   function wh(q){if(q.v===1&&q.rc)return 'code '+String(q.rc).toUpperCase().slice(0,6)+(q.gv!==GV?' (older version)':'');if(q.gv===GV)return 'on the main menu';if(q.gv)return 'older version '+q.gv;return 'older version, not reloaded';}
   const mineSt=PS.err?`refused (${PS.err})`:PS.ok?'shared':'not shared yet';const echo=mine&&mine.presence&&mine.presence.rc===net.code?'room sees you':'room doesn’t show your code yet';
-  $('lbDirect').hidden=!(net.direct&&net.direct.isHost);
+  $('lbDirect').hidden=!(net.direct&&net.direct.isHost&&!net.direct.peer);
   if(net.direct)setT($('lbDiag'),`Direct game · ${oth.length} other player${oth.length===1?'':'s'} linked`+(net.direct.isHost?' · you are hosting: keep this page open':''));else
   setT($('lbDiag'),`Room check v${GV}: ${net.conn?'connected':'not connected'} · ${here} with code ${net.code.toUpperCase()}`+(oth.length?` · other pages: ${what.join(', ')}`:' · no other pages open')+` · your status: ${mineSt}, ${echo}${mine&&mine.guest?' · you are a guest here':''}`);
   if(g&&g.ph&&g.ph!=='lobby')enterGame();
@@ -7903,13 +7935,18 @@ setTimeout(boot,40);
   try{r=window.claude&&typeof window.claude.use==='function'?await window.claude.use('room'):null;}catch(e){r=null;}
   roomApi=r;
   if(r){try{r.presence({gv:GV,st:'menu'}).catch(e=>{PS.err='menu: '+(e&&e.code);});}catch(e){}$('btnCreate').disabled=false;$('btnJoin').disabled=false;$('netNote').innerHTML='Create a room and share the 4-letter code, or type a friend’s code. Everyone opens <b>this same page</b> while signed in to Claude. Empty slots are filled by bots.';}
-  else explainNoRooms(performance.now()-t0);
+  else if(typeof RTCPeerConnection==='function'&&!(window.claude&&typeof window.claude.use==='function'&&window.top!==window)){
+    $('netNote').textContent='Getting online play ready…';
+    if(await loadPeerJs()){peerMode=true;$('btnCreate').disabled=false;$('btnJoin').disabled=false;$('directCard').hidden=true;
+      $('netNote').innerHTML='Create a room and send the 4-letter code to your friends, or type a friend’s code. Works between <b>any</b> players on any network. Empty slots are filled by bots.';}
+    else explainNoRooms(performance.now()-t0);
+  }else explainNoRooms(performance.now()-t0);
 })();
 // rooms refused: find out why (a switched-off permission is the usual reason) and offer the fix
 async function explainNoRooms(ms){
   const note=$('netNote'),row=$('netFixRow'),fix=$('netFix'),diag=$('netDiag');
   $('btnCreate').title=$('btnJoin').title='Online rooms are not available on this page';
-  if(!window.claude||typeof window.claude.use!=='function'){note.innerHTML='Online rooms don’t work with the game open as a plain file or in a tab of its own. Open it from its <b>claude.ai link</b>. Vs bots works here.';return;}
+  if(!window.claude||typeof window.claude.use!=='function'){note.innerHTML=typeof RTCPeerConnection==='function'?'Online play couldn’t load. Check your internet connection, and that an ad or script blocker isn’t blocking <b>unpkg.com</b>, then reload. Vs bots works here.':'This browser can’t do online play. Try Chrome, Edge, Firefox or Safari. Vs bots works here.';return;}
   let perm=null,st='unknown';
   try{perm=await window.claude.use('permissions');}catch(e){perm=null;}
   if(perm){try{st=await perm.state('room');}catch(e){st='unknown';}}
