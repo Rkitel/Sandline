@@ -7931,7 +7931,7 @@ function upgradeSar(root){
     TX.stipple=texFrom(normalCanvas(h,N,2.2),false);TX.stipple.repeat.set(7,7);}
   const poly=new THREE.MeshStandardMaterial({color:LC(0x1f2022),roughness:.62,metalness:.04,normalMap:TX.stipple,normalScale:new THREE.Vector2(.35,.35),envMapIntensity:1});
   const metal=new THREE.MeshStandardMaterial({color:LC(0x2c2d30),roughness:.36,metalness:.85,envMapIntensity:1.2});
-  const glass=new THREE.MeshStandardMaterial({color:LC(0x18323a),roughness:.03,metalness:.3,envMapIntensity:2,transparent:true,opacity:.18,depthWrite:false,side:THREE.DoubleSide});
+  const glass=new THREE.MeshStandardMaterial({color:LC(0x5d7f82),roughness:.06,metalness:1,envMapIntensity:1.6,emissive:LC(0x06100f),emissiveIntensity:1});
   const mag=new THREE.MeshStandardMaterial({color:LC(0x6e6b66),roughness:.18,metalness:0,envMapIntensity:1.4,transparent:true,opacity:.62,depthWrite:false,side:THREE.DoubleSide});
   let magBox=null;
   root.traverse(o=>{if(!o.isMesh)return;const n=(o.material&&o.material.name)||'';
@@ -7943,6 +7943,12 @@ function upgradeSar(root){
     const yTop=magBox.max.y-.012,yBot=magBox.min.y+.012;let i=0;for(let y=yTop;y>yBot;y-=r*1.75){const x=(i%2?1:-1)*r*.95;
       const c=new THREE.Mesh(g,brass);c.rotation.x=Math.PI/2;c.position.set(x,y,cz+L*.14);root.add(c);
       const t=new THREE.Mesh(gt,tip);t.rotation.x=-Math.PI/2;t.position.set(x,y,cz+L*.14-L*.5);root.add(t);i++;}}
+  // lenses: a coated-glass picture (deep teal centre, bright rim reflection, a soft highlight) so the scope reads as glass in any light
+  if(!TX.lens)TX.lens=canvasTex(128,128,(x,w,h)=>{const g=x.createRadialGradient(54,50,4,64,64,64);g.addColorStop(0,'#2f5f63');g.addColorStop(.45,'#123236');g.addColorStop(.8,'#0b1d22');g.addColorStop(1,'#2b3f45');x.fillStyle=g;x.fillRect(0,0,w,h);
+    x.globalCompositeOperation='lighter';const g2=x.createRadialGradient(46,40,0,46,40,26);g2.addColorStop(0,'rgba(220,240,255,.55)');g2.addColorStop(1,'rgba(220,240,255,0)');x.fillStyle=g2;x.fillRect(0,0,w,h);
+    x.strokeStyle='rgba(140,90,200,.35)';x.lineWidth=5;x.beginPath();x.arc(64,64,50,3.6,5.2);x.stroke();x.strokeStyle='rgba(120,220,160,.25)';x.beginPath();x.arc(64,64,42,.4,1.6);x.stroke();},true,false);
+  const lensM=new THREE.MeshStandardMaterial({map:TX.lens,emissiveMap:TX.lens,emissive:new THREE.Color(.55,.55,.55),roughness:.05,metalness:.1,envMapIntensity:1.5});
+  for(const [z,dir] of [[.0612,1],[-.1436,-1]]){const d=new THREE.Mesh(new THREE.CircleGeometry(.0107,8),lensM);d.position.set(0,.1426,z);d.rotation.y=dir>0?0:Math.PI;d.rotation.z=Math.PI/8*0;root.add(d);}
   root.userData.sight=[.1427,.064];   // centre of the scope tube, and its rear end
   return root;}
 // Tempest BR: an original bullpup rifle built from shapes (metres, muzzle toward −z, origin at the grip)
